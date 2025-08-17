@@ -1,0 +1,33 @@
+{
+  "name": "fullfathom5",
+  "displayName": "FullFathom5",
+  "description": "Bones: context-aware CLI companion – basic VS Code integration.",
+  "version": "0.0.1",
+  "publisher": "your-publisher-id",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onCommand:fullfathom5.helloBones"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "fullfathom5.helloBones",
+        "title": "FullFathom5: Hello Bones"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0",
+    "eslint": "^9.0.0",
+    "vsce": "^3.0.0"
+  }
+}

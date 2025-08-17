@@ -1,0 +1,36 @@
+import * as vscode from "vscode";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+const execFileAsync = promisify(execFile);
+
+/**
+ * Activates on the first command invocation.
+ */
+export function activate(context: vscode.ExtensionContext) {
+  const hello = vscode.commands.registerCommand("fullfathom5.helloBones", async () => {
+    vscode.window.showInformationMessage("FullFathom5: Hello Bones 👋");
+  });
+
+  // Example command that shells out to your installed CLI `bones`
+  const runBones = vscode.commands.registerCommand("fullfathom5.runBonesAsk", async () => {
+    const question = await vscode.window.showInputBox({
+      prompt: "Ask Bones with repo context…",
+      placeHolder: "e.g., add a TODO.md with near/long-term tasks"
+    });
+    if (!question) return;
+
+    try {
+      // run bones in cwd (the workspace root)
+      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      const { stdout, stderr } = await execFileAsync("bones", ["chat"], { cwd, shell: true, timeout: 0 });
+      // NOTE: bones is interactive; you'd adapt your CLI with a `--one-shot` flag for non-interactive calls
+      vscode.window.showInformationMessage(`Bones launched in terminal. Interact there.\n${stderr ? "(Warnings in stderr)" : ""}`);
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Failed to run bones: ${err?.message ?? err}`);
+    }
+  });
+
+  context.subscriptions.push(hello, runBones);
+}
+
+export function deactivate() {}

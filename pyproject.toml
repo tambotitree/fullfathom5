@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61", "wheel", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fullfathom5"               # PyPI distribution name (choose your final spelling)
+dynamic = ["version"]
+description = "Bones: a context-aware CLI for file-aware LLM workflows."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "John Ryan", email = "tambotitree@gmail.com" }]
+keywords = ["cli", "code-assistant", "LLM", "context", "developer-tools"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+dependencies = [
+  "click>=8.1",
+  "python-dotenv>=1.0",
+  "httpx>=0.28",
+  # add your model SDK of choice (openai, anthropic, etc.) later
+]
+
+[project.scripts]
+bones = "fullfathom5.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yourname/fullfathom5"
+Issues   = "https://github.com/yourname/fullfathom5/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["fullfathom5*"]
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0"
+version_scheme = "guess-next-dev"
+local_scheme = "node-and-date"
