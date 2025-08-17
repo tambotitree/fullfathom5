@@ -1,0 +1,80 @@
+--- a/src/fullfathom5/bones/bones_cli.py
++++ b/src/fullfathom5/bones/bones_cli.py
+@@
+-"""
+-Bones CLI — MVP REPL with vim-style :commands.
+-Relies on eqnlint.lib._ai.AIClient for model calls.
+-"""
++"""
++Bones CLI — MVP REPL with vim-style :commands.
++Relies on eqnlint.lib._ai.AIClient for model calls.
++"""
+
+ from __future__ import annotations
+-import sys, argparse, asyncio, textwrap
++import sys, os, re, argparse, asyncio, textwrap
+ from typing import Optional
+
+ from eqnlint.lib._ai import AIClient  # single source of truth
+ from .commands import CommandProcessor, CommandAction
+ from .state_machine import StateMachine
+@@
+-def _small_talk_fastpath(s: str) -> Optional[str]:
+-    t = s.strip().lower()
+-    if not t:
+-        return ""
+-    trivial = {"hi", "hello", "yo", "hey", "thanks", "thank you", "sup", "hola"}
+-    if len(t) <= 12 and t in trivial:
+-        return "👋 Hi! What do you want to do in this repo?"
+-    return None
++def _small_talk_fastpath(s: str) -> Optional[str]:
++    """Return a canned response (or empty string to no-op) if input is trivial."""
++    t = s.strip().lower()
++    if not t:
++        return ""
++    # exact short greetings
++    if t in {"hi", "hello", "yo", "hey", "thanks", "thank you", "sup", "hola"}:
++        return "👋 Hi! What do you want to do in this repo?"
++    # soft patterns like 'say hello', 'say hi', 'greet'
++    if re.fullmatch(r"\s*(please\s+)?(say\s+)?(hi|hello)\s*[.!]?\s*", t):
++        return "👋 Hello! Ready when you are."
++    if re.fullmatch(r"\s*(please\s+)?greet\s*(me)?\s*[.!]?\s*", t):
++        return "👋 Hello! How can I help in this codebase?"
++    return None
++
++def _choose_model(cli_model: Optional[str]) -> str:
++    """Pick a model: CLI > env > default."""
++    if cli_model and cli_model.strip():
++        return cli_model.strip()
++    # accept either of these envs if present
++    for key in ("BONES_MODEL", "OPENAI_MODEL"):
++        v = os.getenv(key, "").strip()
++        if v:
++            return v
++    return "gpt-4o-mini"
+@@
+-async def _repl(model: str, rate: float, max_tokens: int) -> None:
++async def _repl(model: str, rate: float, max_tokens: int) -> None:
+     # Create the shared AI client via eqnlint
+     ai = AIClient(model=model, rate=rate, max_tokens=max_tokens)
+@@
+ def main(argv=None) -> None:
+     p = argparse.ArgumentParser(description="Bones CLI — a meta tool for code + papers")
+     p.add_argument("--model", default=None, help="Override model (or BONES_MODEL env)")
+     p.add_argument("--rate", default=0.5, type=float, help="Requests/sec budget")
+     p.add_argument("--max-tokens", default=1200, type=int, dest="max_tokens", help="Max response tokens")
+     args = p.parse_args(argv)
+
+-    try:
+-        asyncio.run(_repl(args.model, args.rate, args.max_tokens))
++    model = _choose_model(args.model)
++    try:
++        asyncio.run(_repl(model, args.rate, args.max_tokens))
+     except RuntimeError as e:
+         # asyncio event loop weirdness on some platforms
+         if "asyncio.run() cannot be called from a running event loop" in str(e):
+             loop = asyncio.get_event_loop()
+-            loop.run_until_complete(_repl(args.model, args.max_tokens))
++            loop.run_until_complete(_repl(model, args.rate, args.max_tokens))
+         else:
+             raise

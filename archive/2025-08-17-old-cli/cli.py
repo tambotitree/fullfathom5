@@ -5,6 +5,7 @@ import os, sys, json, textwrap, asyncio, pathlib, shutil, subprocess
 from typing import Any, List, Dict
 import click
 from dotenv import load_dotenv
+from .ai import get_ai_client
 
 project_name = "fullfathom5"
 # Try to read pyproject.toml for [project].name at runtime; else default.
@@ -27,6 +28,21 @@ def load_env():
         click.secho("WARN: OPENAI_API_KEY not found in environment (.env?)", fg="yellow")
 
 # ---------- Helpers ----------
+HELP_TEXT = """
+Bones Chat — quick commands:
+  ? or help      Show this help
+  quit | exit    Leave chat
+  :q             Leave chat (vim-style)
+
+Tips:
+  • Press Ctrl-C to exit immediately.
+  • Type your question or instruction and press Enter.
+""".strip()
+
+def print_help():
+    click.secho(HELP_TEXT, fg="cyan")
+
+
 def safe_relpath(p: str) -> str:
     full = (ROOT / p).resolve()
     if ROOT not in full.parents and full != ROOT:
@@ -193,6 +209,8 @@ def cli():
     pass
 
 @cli.command()
+@click.option("--project", default=None, help="Project name (auto-detected if omitted)")
+@click.option("--model", default=None, help="Override LLM model (or set BONES_MODEL env var)")
 def version():
     """Show Bones and package version."""
     try:
@@ -231,11 +249,19 @@ def chat(model, rate, max_tokens):
     load_env()
 
     async def _loop():
-        ai = make_ai_client(model=model, rate=rate, max_tokens=max_tokens)
+        ## Old --> ai = make_ai_client(model=model, rate=rate, max_tokens=max_tokens)
+        ai = get_ai_client(model=model, rate=rate, max_tokens=max_tokens)
         try:
             click.secho("bones chat — type your request (Ctrl-C to exit)", fg="cyan", bold=True)
             while True:
                 query = (await asyncio.to_thread(input, "\nYou> ")).strip()
+                cmd = (query or "").strip().lower()
+                if cmd in {"?", "help"}:
+                    print_help()
+                    continue
+                if cmd in {"quit", "exit", ":q"}:
+                    click.secho("Exiting chat.", fg="cyan")
+                    break
                 if not query:
                     continue
 

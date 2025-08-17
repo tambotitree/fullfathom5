@@ -18,6 +18,7 @@ classifiers = [
 ]
 
 dependencies = [
+  "eqnlint>=0.2.5",
   "click>=8.1",
   "python-dotenv>=1.0",
   "httpx>=0.28",
@@ -25,7 +26,7 @@ dependencies = [
 ]
 
 [project.scripts]
-bones = "fullfathom5.cli:main"
+bones = "fullfathom5.bones.bones_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/yourname/fullfathom5"
@@ -36,6 +37,6 @@ where = ["src"]
 include = ["fullfathom5*"]
 
 [tool.setuptools_scm]
-fallback_version = "0.0.0"
+fallback_version = "0.0.2"
 version_scheme = "guess-next-dev"
 local_scheme = "node-and-date"
