@@ -1,2 +1,4 @@
 Hi there
 :q
+I need to add a unix command capability to the command loop :! <some unix command> and I think its in repl_base.py.  Can you add that for me?
+:diff

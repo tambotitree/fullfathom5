@@ -1,19 +1,33 @@
 #!/usr/bin/env python3
 """
-Bones CLI — thin entrypoint that wires args/env → BonesRepl.
-All REPL logic, editing, preview, and state-machine orchestration
-live in `repl_base.py` (class BonesRepl).
+Bones CLI — thin entrypoint that wires args/env → BonesRepl/ChoralRepl.
+
+Usage examples:
+  bones                              # plain REPL
+  bones --ui choral                  # try full-screen UI (if available)
+  bones --model gpt-4o-mini          # override model
+  bones --rate 0.7 --max-tokens 1800 # tune runtime params
+  bones --version                    # print version
 """
 
 from __future__ import annotations
 
 import os
+import sys
 import argparse
 import asyncio
 import importlib.metadata as _ilm
 from typing import Optional
 
-from .repl_base import BonesRepl  # <-- the class that owns AI/SM/commands
+from .repl_base import BonesRepl  # core REPL (always available)
+
+# Optional Choral UI (full-screen). Fallback to BonesRepl if unavailable.
+try:
+    from .choral_base import ChoralRepl  # type: ignore
+    _HAS_CHORAL = True
+except Exception:
+    ChoralRepl = None  # type: ignore
+    _HAS_CHORAL = False
 
 
 # ---------- helpers ----------
@@ -41,11 +55,24 @@ def main(argv=None) -> None:
     p.add_argument("--model", default=None, help="Override model (or BONES_MODEL / OPENAI_MODEL env)")
     p.add_argument("--rate", default=0.5, type=float, help="Requests/sec budget")
     p.add_argument("--max-tokens", default=1200, type=int, dest="max_tokens", help="Max response tokens")
+    p.add_argument("--ui", choices=["repl", "choral"], default="repl",
+                   help="Choose interface: 'repl' (default) or 'choral' (full-screen if available)")
     p.add_argument("--version", action="version", version=f"Bones {_pkg_version()}")
     args = p.parse_args(argv)
 
     model = _choose_model(args.model)
-    repl = BonesRepl(model=model, rate=args.rate, max_tokens=args.max_tokens)
+
+    # Select UI class
+    if args.ui == "choral":
+        if _HAS_CHORAL and ChoralRepl is not None:
+            ReplClass = ChoralRepl
+        else:
+            print("WARN: Choral UI not available; falling back to plain REPL.", file=sys.stderr)
+            ReplClass = BonesRepl
+    else:
+        ReplClass = BonesRepl
+
+    repl = ReplClass(model=model, rate=args.rate, max_tokens=args.max_tokens)
 
     try:
         asyncio.run(repl.run())
