@@ -1,0 +1,126 @@
+*** a/src/fullfathom5/bones/repl_base.py
+--- b/src/fullfathom5/bones/repl_base.py
+@@
+ class BonesRepl:
+@@
+     def __init__(self, model: str, rate: float, max_tokens: int):
+         # config
+         self.model = model
+         self.rate = rate
+         self.max_tokens = max_tokens
+ 
+         # engine pieces
+         self.ai = AIClient(model=model, rate=rate, max_tokens=max_tokens)
+         self.sm = StateMachine(self.ai)
+         self.cp = CommandProcessor(self.ai, self.sm)
+ 
+         # input setup
+         self._get_line: Callable[[str], str] = self._setup_line_input()
++        # local staging owned by the REPL (not by CommandProcessor)
++        self._staged_writes: List[Dict[str, Any]] = []
++        self._staged_patches: List[Dict[str, Any]] = []
+@@
+     def print_tips(self) -> None:
+         print("bones chat — type your request (Ctrl-C to exit)")
+         print("tips: ':q' quit, ':w' apply writes, ':m <model>', ':r <rate>', ':tokens <n>', '::text' to send leading colon.")
+-        print("      ':diff' previews staged changes. Use a path to filter: ':diff src/foo.py'.")
++        print("      ':diff' previews staged changes. Use a path to filter: ':diff src/foo.py'.")
++        print("      ':! <cmd>' runs a shell command (e.g., :! ls -la)")
+@@
+     async def render_preview(self, changes: Dict[str, Any], path_filter: Optional[str] = None) -> None:
+@@
+         await self._pager_print(out)
+ 
+     async def _pager_print(self, text: str) -> None:
+@@
+         print(text)
+ 
++    # ---------- Shell runner ----------
++    async def _run_shell(self, cmd: str) -> int:
++        """
++        Run a shell command (like `:! <cmd>`), capture stdout/stderr, and print them.
++        Returns the process' exit code.
++        """
++        if not cmd.strip():
++            self.write_line("(no command provided)")
++            return 2
++        try:
++            proc = await asyncio.create_subprocess_shell(
++                cmd,
++                stdout=asyncio.subprocess.PIPE,
++                stderr=asyncio.subprocess.PIPE,
++            )
++            out_b, err_b = await proc.communicate()
++            out = (out_b or b"").decode("utf-8", errors="replace")
++            err = (err_b or b"").decode("utf-8", errors="replace")
++            if out:
++                print(out, end="" if out.endswith("\n") else "\n")
++            if err:
++                print(err, file=sys.stderr, end="" if err.endswith("\n") else "\n")
++            return proc.returncode or 0
++        except FileNotFoundError:
++            self.write_line("Shell not found for :! command.")
++            return 127
++        except Exception as e:
++            self.write_line(f":! error: {e}")
++            return 1
++
+@@
+     async def run(self) -> None:
+         self.print_tips()
+ 
+         try:
+             while True:
+                 line = await self.read_line("\nYou> ")
+ 
+                 # 1) Commands
+                 if line.startswith(":"):
+                     # "::foo" -> send ":foo" literally to the model
+                     if line.startswith("::"):
+                         line = line[1:]
+                     else:
++                        # :! <shell command>
++                        if line.startswith(":!"):
++                            cmd = line[2:].strip()
++                            await self._run_shell(cmd)
++                            continue
+                         # Local :diff preview hook (optional path filter)
+                         if line.startswith(":diff"):
+                             _, _, filt = line.partition(" ")
+                             filt = (filt or "").strip() or None
+-                            staged = {
+-                                "writes": self.cp.staged_writes,
+-                                "patches": self.cp.staged_patches,
+-                            }
++                            staged = {"writes": self._staged_writes, "patches": self._staged_patches}
+                             await self.render_preview(staged, path_filter=filt)
+                             continue
+ 
+                         action = self.handle_command(line)
+                         if action is CommandAction.QUIT:
+                             self.write_line("Exiting chat.")
+                             break
+                         # other actions already handled by CommandProcessor
+                         continue
+@@
+                 # 3) Normal state-machine turn
+                 outcome = await self.sm.run_turn(line)
+                 if "answer_md" in outcome:
+                     self.write_line(textwrap.dedent(outcome["answer_md"]).strip())
+                 elif "writes" in outcome:
+-                    self.write_line("Proposed writes (staged). Use ':diff' to preview or ':w' to apply.")
+-                    self.cp.stage_writes(outcome["writes"])
++                    self.write_line("Proposed writes (staged). Use ':diff' to preview or ':w' to apply.")
++                    self._staged_writes = list(outcome["writes"])  # keep a copy for preview
++                    # keep CommandProcessor as the applier for :w
++                    self.cp.stage_writes(outcome["writes"])
+                 elif "patches" in outcome:
+-                    self.write_line("Proposed patches (staged). Use ':diff' to preview or ':w' to apply.")
+-                    self.cp.stage_patches(outcome["patches"])
++                    self.write_line("Proposed patches (staged). Use ':diff' to preview or ':w' to apply.")
++                    self._staged_patches = list(outcome["patches"])
++                    self.cp.stage_patches(outcome["patches"])
+                 elif "clarify" in outcome:
+                     self.write_line(outcome["clarify"])
+                 else:
+                     self.write_line(textwrap.dedent(str(outcome)))

@@ -1,0 +1,106 @@
+diff --git a/src/fullfathom5/bones/repl_base.py b/src/fullfathom5/bones/repl_base.py
+--- a/src/fullfathom5/bones/repl_base.py
++++ b/src/fullfathom5/bones/repl_base.py
+@@ -58,6 +58,9 @@ class BonesRepl:
+ 
+         # input setup
+         self._get_line: Callable[[str], str] = self._setup_line_input()
++        # local staging owned by the REPL (not by CommandProcessor) for previews
++        self._staged_writes: List[Dict[str, Any]] = []
++        self._staged_patches: List[Dict[str, Any]] = []
+ 
+     # ---------- I/O setup ----------
+     def _setup_line_input(self) -> Callable[[str], str]:
+@@ -119,6 +122,7 @@ class BonesRepl:
+     def print_tips(self) -> None:
+         print("bones chat — type your request (Ctrl-C to exit)")
+         print("tips: ':q' quit, ':w' apply writes, ':m <model>', ':r <rate>', ':tokens <n>', '::text' to send leading colon.")
+         print("      ':diff' previews staged changes. Use a path to filter: ':diff src/foo.py'.")
++        print("      ':! <cmd>' runs a shell command (e.g., :! ls -la)")
+ 
+     def write_line(self, text: str) -> None:
+         print(text)
+@@ -200,6 +204,34 @@ class BonesRepl:
+         # Fallback: plain print
+         print(text)
+ 
++    # ---------- Shell runner ----------
++    async def _run_shell(self, cmd: str) -> int:
++        """
++        Run a shell command (like ':! <cmd>'), capture stdout/stderr, and print them.
++        Returns the process' exit code.
++        """
++        import sys
++        if not cmd.strip():
++            self.write_line("(no command provided)")
++            return 2
++        try:
++            proc = await asyncio.create_subprocess_shell(
++                cmd,
++                stdout=asyncio.subprocess.PIPE,
++                stderr=asyncio.subprocess.PIPE,
++            )
++            out_b, err_b = await proc.communicate()
++            out = (out_b or b"").decode("utf-8", errors="replace")
++            err = (err_b or b"").decode("utf-8", errors="replace")
++            if out:
++                print(out, end="" if out.endswith("\n") else "\n")
++            if err:
++                print(err, file=sys.stderr, end="" if err.endswith("\n") else "\n")
++            return proc.returncode or 0
++        except FileNotFoundError:
++            self.write_line("Shell not found for :! command.")
++            return 127
++        except Exception as e:
++            self.write_line(f":! error: {e}")
++            return 1
++
+     # ---------- Command entry (hook for subclasses if needed) ----------
+     def handle_command(self, raw: str) -> Optional[CommandAction]:
+         """
+@@ -216,6 +248,12 @@ class BonesRepl:
+                 if line.startswith(":"):
+                     # "::foo" -> send ":foo" literally to the model
+                     if line.startswith("::"):
+                         line = line[1:]
+                     else:
++                        # :! <shell command>
++                        if line.startswith(":!"):
++                            cmd = line[2:].strip()
++                            await self._run_shell(cmd)
++                            continue
++
+                         # Local :diff preview hook (optional path filter)
+                         if line.startswith(":diff"):
+                             _, _, filt = line.partition(" ")
+@@ -223,8 +261,8 @@ class BonesRepl:
+-                            staged = {
+-                                "writes": self.cp.staged_writes,
+-                                "patches": self.cp.staged_patches,
+-                            }
++                            staged = {
++                                "writes": self._staged_writes,
++                                "patches": self._staged_patches,
++                            }
+                             await self.render_preview(staged, path_filter=filt)
+                             continue
+ 
+@@ -248,11 +286,15 @@ class BonesRepl:
+                 if "answer_md" in outcome:
+                     self.write_line(textwrap.dedent(outcome["answer_md"]).strip())
+                 elif "writes" in outcome:
+                     self.write_line("Proposed writes (staged). Use ':diff' to preview or ':w' to apply.")
+-                    self.cp.stage_writes(outcome["writes"])
++                    # keep a local copy for preview
++                    self._staged_writes = list(outcome["writes"])
++                    # still let CommandProcessor own ':w'
++                    self.cp.stage_writes(outcome["writes"])
+                 elif "patches" in outcome:
+                     self.write_line("Proposed patches (staged). Use ':diff' to preview or ':w' to apply.")
+-                    self.cp.stage_patches(outcome["patches"])
++                    self._staged_patches = list(outcome["patches"])
++                    self.cp.stage_patches(outcome["patches"])
+                 elif "clarify" in outcome:
+                     self.write_line(outcome["clarify"])
+                 else:
+                     self.write_line(textwrap.dedent(str(outcome)))

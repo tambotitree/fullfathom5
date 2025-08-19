@@ -1,0 +1,7 @@
+--- a/src/fullfathom5/bones/bones_cli.py
++++ b/src/fullfathom5/bones/bones_cli.py
+@@ -1,3 +1,4 @@
++# Temporary test comment to validate gpatch
+ import sys
+ 
+ def main():

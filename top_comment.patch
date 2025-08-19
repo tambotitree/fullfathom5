@@ -1,0 +1,4 @@
+--- a/src/fullfathom5/bones/bones_cli.py
++++ b/src/fullfathom5/bones/bones_cli.py
+@@ -1,0 +1,1 @@
++# Temporary test comment to validate gpatch

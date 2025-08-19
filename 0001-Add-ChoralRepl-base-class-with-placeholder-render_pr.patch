@@ -1,0 +1,210 @@
+From ed0d45e192d0eb15bf3c6ae79efbdaecfbfe9569 Mon Sep 17 00:00:00 2001
+From: tambotitree <70440096+tambotitree@users.noreply.github.com>
+Date: Tue, 19 Aug 2025 13:06:49 +0800
+Subject: [PATCH] Add ChoralRepl base class with placeholder render_preview
+
+---
+ .bones/history                       |   2 +
+ src/fullfathom5/bones/bones_cli.py   |  37 +++++++--
+ src/fullfathom5/bones/choral_base.py | 111 +++++++++++++++++++++++++--
+ 3 files changed, 140 insertions(+), 10 deletions(-)
+
+diff --git a/.bones/history b/.bones/history
+index ddfc8a7..ba9654b 100644
+--- a/.bones/history
++++ b/.bones/history
+@@ -1,2 +1,4 @@
+ Hi there
+ :q
++I need to add a unix command capability to the command loop :! <some unix command> and I think its in repl_base.py.  Can you add that for me?
++:diff
+diff --git a/src/fullfathom5/bones/bones_cli.py b/src/fullfathom5/bones/bones_cli.py
+index 647b052..c8defca 100644
+--- a/src/fullfathom5/bones/bones_cli.py
++++ b/src/fullfathom5/bones/bones_cli.py
+@@ -1,19 +1,33 @@
+ #!/usr/bin/env python3
+ """
+-Bones CLI — thin entrypoint that wires args/env → BonesRepl.
+-All REPL logic, editing, preview, and state-machine orchestration
+-live in `repl_base.py` (class BonesRepl).
++Bones CLI — thin entrypoint that wires args/env → BonesRepl/ChoralRepl.
++
++Usage examples:
++  bones                              # plain REPL
++  bones --ui choral                  # try full-screen UI (if available)
++  bones --model gpt-4o-mini          # override model
++  bones --rate 0.7 --max-tokens 1800 # tune runtime params
++  bones --version                    # print version
+ """
+ 
+ from __future__ import annotations
+ 
+ import os
++import sys
+ import argparse
+ import asyncio
+ import importlib.metadata as _ilm
+ from typing import Optional
+ 
+-from .repl_base import BonesRepl  # <-- the class that owns AI/SM/commands
++from .repl_base import BonesRepl  # core REPL (always available)
++
++# Optional Choral UI (full-screen). Fallback to BonesRepl if unavailable.
++try:
++    from .choral_base import ChoralRepl  # type: ignore
++    _HAS_CHORAL = True
++except Exception:
++    ChoralRepl = None  # type: ignore
++    _HAS_CHORAL = False
+ 
+ 
+ # ---------- helpers ----------
+@@ -41,11 +55,24 @@ def main(argv=None) -> None:
+     p.add_argument("--model", default=None, help="Override model (or BONES_MODEL / OPENAI_MODEL env)")
+     p.add_argument("--rate", default=0.5, type=float, help="Requests/sec budget")
+     p.add_argument("--max-tokens", default=1200, type=int, dest="max_tokens", help="Max response tokens")
++    p.add_argument("--ui", choices=["repl", "choral"], default="repl",
++                   help="Choose interface: 'repl' (default) or 'choral' (full-screen if available)")
+     p.add_argument("--version", action="version", version=f"Bones {_pkg_version()}")
+     args = p.parse_args(argv)
+ 
+     model = _choose_model(args.model)
+-    repl = BonesRepl(model=model, rate=args.rate, max_tokens=args.max_tokens)
++
++    # Select UI class
++    if args.ui == "choral":
++        if _HAS_CHORAL and ChoralRepl is not None:
++            ReplClass = ChoralRepl
++        else:
++            print("WARN: Choral UI not available; falling back to plain REPL.", file=sys.stderr)
++            ReplClass = BonesRepl
++    else:
++        ReplClass = BonesRepl
++
++    repl = ReplClass(model=model, rate=args.rate, max_tokens=args.max_tokens)
+ 
+     try:
+         asyncio.run(repl.run())
+diff --git a/src/fullfathom5/bones/choral_base.py b/src/fullfathom5/bones/choral_base.py
+index 30b57c2..55ec079 100644
+--- a/src/fullfathom5/bones/choral_base.py
++++ b/src/fullfathom5/bones/choral_base.py
+@@ -1,8 +1,109 @@
+-# repl_choral.py
++# src/fullfathom5/bones/choral_base.py
++"""
++ChoralRepl — BonesRepl with a full-screen preview for staged changes.
++
++- Uses prompt_toolkit Application/TextArea for a scrollable, read-only diff view.
++- Keys: 'q', 'Esc', or Ctrl-C to close the viewer.
++- Falls back to base render_preview if prompt_toolkit is unavailable.
++"""
++
++from __future__ import annotations
++
++from typing import Optional, Dict, Any
++
+ from .repl_base import BonesRepl
+ 
++# Import prompt_toolkit pieces lazily/optionally
++try:
++    from prompt_toolkit.application import Application  # type: ignore
++    from prompt_toolkit.layout import Layout  # type: ignore
++    from prompt_toolkit.layout.containers import HSplit, Window  # type: ignore
++    from prompt_toolkit.widgets import TextArea, Frame  # type: ignore
++    from prompt_toolkit.key_binding import KeyBindings  # type: ignore
++    from prompt_toolkit.styles import Style  # type: ignore
++    _HAS_PT = True
++except Exception:
++    # Not installed; Choral will fall back to base behavior.
++    _HAS_PT = False
++
++
+ class ChoralRepl(BonesRepl):
+-    async def render_preview(self, changes: dict) -> None:
+-        # For now: just call the base implementation.
+-        # Later: replace with prompt_toolkit full-screen diff viewer.
+-        await super().render_preview(changes)
++    def print_tips(self) -> None:
++        super().print_tips()
++        if _HAS_PT:
++            self.write_line("      (choral) In preview: q/Esc/Ctrl-C to close, arrows/PgUp/PgDn to scroll.")
++
++    async def render_preview(self, changes: Dict[str, Any], path_filter: Optional[str] = None) -> None:
++        """
++        Full-screen diff preview if prompt_toolkit is available, otherwise fallback to base.
++        """
++        if not _HAS_PT:
++            # Defer to stdout/pager implementation
++            await super().render_preview(changes, path_filter=path_filter)
++            return
++
++        # Ask the base to generate the diff text, but intercept printing.
++        # Trick: temporarily monkeypatch _pager_print to capture output.
++        # (We keep this local and safe, then restore.)
++        captured: Dict[str, str] = {"text": ""}
++
++        async def _capture(text: str) -> None:
++            captured["text"] = text
++
++        orig_pager = getattr(self, "_pager_print")
++
++        try:
++            setattr(self, "_pager_print", _capture)  # type: ignore[attr-defined]
++            await super().render_preview(changes, path_filter=path_filter)
++        finally:
++            setattr(self, "_pager_print", orig_pager)  # restore
++
++        diff_text = captured["text"].strip()
++        if not diff_text:
++            self.write_line("(no staged changes to preview)")
++            return
++
++        # Build a full-screen viewer
++        kb = KeyBindings()
++
++        @kb.add("q")
++        @kb.add("escape")
++        @kb.add("c-c")
++        def _(event):
++            event.app.exit()
++
++        body = TextArea(
++            text=diff_text,
++            read_only=True,
++            scrollbar=True,
++            line_numbers=False,
++            focus_on_click=True,
++            wrap_lines=False,
++        )
++
++        frame = Frame(
++            body=body,
++            title="Choral — Staged Changes Preview (:diff)",
++        )
++
++        root = HSplit([
++            frame,
++            Window(height=1, char="-"),
++        ])
++
++        style = Style.from_dict({
++            "frame.border": "ansiblue",
++            "frame.title": "bold",
++        })
++
++        app = Application(
++            layout=Layout(root),
++            key_bindings=kb,
++            full_screen=True,
++            mouse_support=True,
++            style=style,
++        )
++
++        # Run the full-screen app (synchronously); we're in async context, so run in a thread
++        from asyncio import to_thread
++        await to_thread(app.run)
+-- 
+2.39.5 (Apple Git-154)
+

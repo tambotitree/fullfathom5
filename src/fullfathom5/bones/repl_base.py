@@ -22,6 +22,7 @@ import subprocess
 import textwrap
 import difflib
 from typing import Optional, Callable, List, Dict, Any
+from ._apply_patches import apply_patches, ApplyOptions
 
 # Optional UI libs (best UX)
 try:
@@ -64,6 +65,9 @@ class BonesRepl:
 
         # input setup
         self._get_line: Callable[[str], str] = self._setup_line_input()
+        # local staging for preview
+        self._staged_writes: List[Dict[str, Any]] = []
+        self._staged_patches: List[Dict[str, Any]] = []
 
     # ---------- I/O setup ----------
     def _setup_line_input(self) -> Callable[[str], str]:
@@ -106,6 +110,28 @@ class BonesRepl:
         return input
 
     # ---------- Small helpers ----------
+    # inside class BonesRepl (near other small helpers)
+    def _writes_to_unified_diffs(self, writes: list[dict]) -> list[dict]:
+        """Turn [{"path","content"}] into [{"path","unified_diff"}] against current disk."""
+        diffs: list[dict] = []
+        for w in writes or []:
+            rel = w.get("path", "")
+            new_text = w.get("content", "")
+            try:
+                old_text = pathlib.Path(rel).read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                old_text = ""
+            ud = "".join(difflib.unified_diff(
+                old_text.splitlines(keepends=True),
+                new_text.splitlines(keepends=True),
+                fromfile=f"a/{rel}",
+                tofile=f"b/{rel}",
+                n=3,
+            ))
+            if ud:
+                diffs.append({"path": rel, "unified_diff": ud})
+        return diffs
+
     @staticmethod
     def _small_talk_fastpath(s: str) -> Optional[str]:
         """Return a canned response (or empty string to no-op) if input is trivial."""
@@ -122,7 +148,7 @@ class BonesRepl:
 
     def print_tips(self) -> None:
         print("bones chat — type your request (Ctrl-C to exit)")
-        print("tips: ':q' quit, ':w' apply writes, ':m <model>', ':r <rate>', ':tokens <n>', '::text' to send leading colon.")
+        print("tips: ':q' quit, ':w' (aka :write) apply writes, ':m <model>', ':r <rate>', ':tokens <n>', '::text' to send leading colon.")
         print("      ':diff' previews staged changes. Use a path to filter: ':diff src/foo.py'.")
 
     def write_line(self, text: str) -> None:
@@ -220,60 +246,124 @@ class BonesRepl:
         """
         return self.cp.handle(raw)
 
+    def _summ_counts(self, file_reports):
+        ok = fuzz = rej = 0
+        for fr in file_reports:
+            # A file is “ok” if some hunk applied exactly
+            # exact_applied = any(hr.applied and hr.exact for hr in fr.hunk_reports)
+            exact_applied = any(hr.applied and hr.exact_match for hr in fr.hunk_reports)
+            # “fuzzy” if some hunk applied but not exact
+            # fuzzy_applied = any(hr.applied and not hr.exact for hr in fr.hunk_reports)
+            fuzzy_applied = any(hr.applied and not hr.exact_match for hr in fr.hunk_reports)
+            # “rejected” if no hunks applied and none were already-applied
+            none_applied = not any(hr.applied for hr in fr.hunk_reports)
+            already_all  = all(hr.already_applied for hr in fr.hunk_reports) if fr.hunk_reports else False
+
+            if exact_applied:
+                ok += 1
+            elif fuzzy_applied:
+                fuzz += 1
+            elif none_applied and not already_all:
+                rej += 1
+            # if already_all: it was a no-op; don’t count as reject
+        return ok, fuzz, rej
+
     # ---------- Main loop ----------
     async def run(self) -> None:
         self.print_tips()
-
+    
         try:
             while True:
                 line = await self.read_line("\nYou> ")
-
-                # 1) Commands
+    
+                # 1) Colon-commands
                 if line.startswith(":"):
                     # "::foo" -> send ":foo" literally to the model
                     if line.startswith("::"):
                         line = line[1:]
                     else:
-                        # Local :diff preview hook (optional path filter)
+                        # :diff [path_filter]
                         if line.startswith(":diff"):
                             _, _, filt = line.partition(" ")
                             filt = (filt or "").strip() or None
-                            staged = {
-                                "writes": self.cp.staged_writes,
-                                "patches": self.cp.staged_patches,
-                            }
+                            staged = {"writes": self._staged_writes, "patches": self._staged_patches}
                             await self.render_preview(staged, path_filter=filt)
                             continue
+    
+                        # :write / :w  → dry-run apply patches, confirm, then real apply
+                        if line.strip() in (":write", ":w"):
+    
+                            if not self._staged_patches and not self._staged_writes:
+                                self.write_line("Nothing staged.")
+                                continue
+    
+                            # Dry run
+                            opts = ApplyOptions(
+                                dry_run=True,
+                                ratio_cutoff=0.70,
+                                ignore_space=False,
+                            )
+                            combined = list(self._staged_patches)
+                            combined += self._writes_to_unified_diffs(self._staged_writes)
 
+                            # On confirm
+                            opts = ApplyOptions(dry_run=True, ratio_cutoff=0.70, ignore_space=False)
+                            reports = apply_patches(combined, options=opts)
+
+                            # Summarize dry run
+                            # ok = sum(1 for r in reports if r.get("status") == "applied")
+                            # fuzz = sum(1 for r in reports if r.get("status") == "fuzzy")
+                            # rej = sum(1 for r in reports if r.get("status") == "rejected")
+                            ok, fuzz, rej = self._summ_counts(reports)
+                            self.write_line(f"Dry-run: applied={ok}, fuzzy={fuzz}, rejected={rej}")
+
+                            # Confirm
+                            confirm = (await self.read_line("Apply patches for real? [y/N] ")).strip().lower()
+                            if confirm.startswith("y"):
+                                opts = ApplyOptions(dry_run=False, ratio_cutoff=0.70, ignore_space=False)
+                                reports = apply_patches(combined, options=opts)
+                                ok, fuzz, rej = self._summ_counts(reports)
+                                self.write_line(f"Apply:   applied={ok}, fuzzy={fuzz}, rejected={rej}")
+                                # Clear staging after real apply
+                                self._staged_patches.clear()
+                                self._staged_writes.clear()
+                            else:
+                                self.write_line("Aborted write.")
+                            continue
+    
+                        # Everything else goes to CommandProcessor
                         action = self.handle_command(line)
                         if action is CommandAction.QUIT:
                             self.write_line("Exiting chat.")
                             break
-                        # other actions already handled by CommandProcessor
-                        continue
-
+    
+                    # important: stay inside colon-commands branch
+                    continue
+    
                 # 2) Small-talk fast path
                 fast = self._small_talk_fastpath(line)
                 if fast is not None:
                     if fast:
                         self.write_line(fast)
                     continue
-
+    
                 # 3) Normal state-machine turn
                 outcome = await self.sm.run_turn(line)
                 if "answer_md" in outcome:
                     self.write_line(textwrap.dedent(outcome["answer_md"]).strip())
                 elif "writes" in outcome:
                     self.write_line("Proposed writes (staged). Use ':diff' to preview or ':w' to apply.")
+                    self._staged_writes = list(outcome["writes"])   # keep copy for :diff
                     self.cp.stage_writes(outcome["writes"])
                 elif "patches" in outcome:
                     self.write_line("Proposed patches (staged). Use ':diff' to preview or ':w' to apply.")
+                    self._staged_patches = list(outcome["patches"]) # keep copy for :diff
                     self.cp.stage_patches(outcome["patches"])
                 elif "clarify" in outcome:
                     self.write_line(outcome["clarify"])
                 else:
                     self.write_line(textwrap.dedent(str(outcome)))
-
+    
         except (KeyboardInterrupt, EOFError):
             self.write_line("\nExiting chat.")
         finally:

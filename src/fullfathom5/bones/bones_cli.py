@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Temporary test comment to validate gpatch
 """
 Bones CLI — thin entrypoint that wires args/env → BonesRepl/ChoralRepl.
 
