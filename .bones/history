@@ -2,3 +2,16 @@ Hi there
 :q
 I need to add a unix command capability to the command loop :! <some unix command> and I think its in repl_base.py.  Can you add that for me?
 :diff
+Say Hello
+Can you help me?
+Can you put a check or the word completed in our TODO.md for adding/improving the state machine?
+:diff
+Can you give me a patch for our TODO.md that marks the state machine "Completed"?
+:diff
+My fault, can you give me a patch to mark our DAG State Machine as "In Progress" in TODO.md?
+:diff
+:q
+Can you add a line to our TODO.md "Add API interface"?
+:diff
+:w
+:q

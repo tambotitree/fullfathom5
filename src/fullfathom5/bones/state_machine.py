@@ -16,6 +16,21 @@ Return ONE of:
 {"patches":[{"path":"rel.ext","unified_diff":"..."}],"message":"..."}
 {"answer_md":"...","message":"..."}"""
 
+def _extract_first_json_object(text: str):
+    """Return first top-level {...} JSON object substring, or None."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        c = text[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i+1]
+    return None
 
 class StateMachine:
     def __init__(self, ai_client: Any, root: pathlib.Path | None = None):
@@ -24,11 +39,20 @@ class StateMachine:
 
     async def _call(self, system: str, user_obj: Dict) -> Dict:
         raw = await self.ai.complete(system, json.dumps(user_obj, indent=2))
+        # First try direct JSON
         try:
             return json.loads(raw)
         except Exception:
-            # Fallback to answer_md if model didn't return JSON
-            return {"answer_md": textwrap.dedent(raw).strip(), "message": "Non-JSON output"}
+            pass
+        # Then try to extract the first top-level JSON object
+        frag = _extract_first_json_object(raw)
+        if frag:
+            try:
+                return json.loads(frag)
+            except Exception:
+                pass
+        # Last resort: treat as markdown/text
+        return {"answer_md": textwrap.dedent(raw).strip(), "message": "Non-JSON output"}
 
     async def _select(self, question: str) -> Dict:
         files: List[str] = []

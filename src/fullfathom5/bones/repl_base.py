@@ -22,6 +22,7 @@ import subprocess
 import textwrap
 import difflib
 from typing import Optional, Callable, List, Dict, Any
+from .bones_engine import BonesEngine, EvUserText, EvCommand, EffPreview, EffApplyPatches, EffRunShell, EffRenderText
 
 # Optional UI libs (best UX)
 try:
@@ -62,8 +63,16 @@ class BonesRepl:
         self.sm = StateMachine(self.ai)
         self.cp = CommandProcessor(self.ai, self.sm)
 
+        # Staged Changes
+        self._staged_writes: List[Dict[str, Any]] = []
+        self._staged_patches: List[Dict[str, Any]] = []
+
         # input setup
         self._get_line: Callable[[str], str] = self._setup_line_input()
+
+        # bones engine
+        self.engine = BonesEngine(self.sm, self.cp)
+
 
     # ---------- I/O setup ----------
     def _setup_line_input(self) -> Callable[[str], str]:
@@ -106,6 +115,16 @@ class BonesRepl:
         return input
 
     # ---------- Small helpers ----------
+    def _stage_for_preview(self, changes: Dict[str, Any]) -> None:
+        ws = changes.get("writes") or []
+        ps = changes.get("patches") or []
+        self._staged_writes = list(ws)
+        self._staged_patches = list(ps)
+        if ws:
+            self.cp.stage_writes(ws)
+        if ps:
+            self.cp.stage_patches(ps)
+        
     @staticmethod
     def _small_talk_fastpath(s: str) -> Optional[str]:
         """Return a canned response (or empty string to no-op) if input is trivial."""
@@ -122,7 +141,7 @@ class BonesRepl:
 
     def print_tips(self) -> None:
         print("bones chat — type your request (Ctrl-C to exit)")
-        print("tips: ':q' quit, ':w' apply writes, ':m <model>', ':r <rate>', ':tokens <n>', '::text' to send leading colon.")
+        print("tips: ':q' quit, ':w' (aka :write) apply writes, ':m <model>', ':r <rate>', ':tokens <n>', '::text' to send leading colon.")
         print("      ':diff' previews staged changes. Use a path to filter: ':diff src/foo.py'.")
 
     def write_line(self, text: str) -> None:
@@ -213,67 +232,76 @@ class BonesRepl:
         # Fallback: plain print
         print(text)
 
+
+    async def _dispatch_effects(self, effects: List[object]) -> None:
+        for eff in effects:
+            if isinstance(eff, EffRenderText):
+                self.write_line(textwrap.dedent(eff.text).strip())
+            elif isinstance(eff, EffPreview):
+                # stage so :diff sees it, then render preview
+                self._stage_for_preview(eff.changes)
+                await self.render_preview(eff.changes, eff.path_filter)
+            elif isinstance(eff, EffApplyPatches):
+                # We’re not emitting this yet; keep placeholder for future
+                pass
+            elif isinstance(eff, EffRunShell):
+                # Keep shell runner path available (not used by engine yet)
+                proc = await asyncio.create_subprocess_shell(
+                    eff.cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                out_b, err_b = await proc.communicate()
+                if out_b: self.write_line(out_b.decode("utf-8", errors="replace"))
+                if err_b: self.write_line(err_b.decode("utf-8", errors="replace"))
+
     # ---------- Command entry (hook for subclasses if needed) ----------
     def handle_command(self, raw: str) -> Optional[CommandAction]:
         """
         Dispatch a colon command. Returns a CommandAction or None if not a control flow action.
         """
         return self.cp.handle(raw)
-
     # ---------- Main loop ----------
     async def run(self) -> None:
         self.print_tips()
-
         try:
             while True:
                 line = await self.read_line("\nYou> ")
-
-                # 1) Commands
+    
+                # 1) Colon-commands
                 if line.startswith(":"):
-                    # "::foo" -> send ":foo" literally to the model
                     if line.startswith("::"):
-                        line = line[1:]
+                        line = line[1:]  # send literal ':' text to model path
                     else:
-                        # Local :diff preview hook (optional path filter)
+                        # Keep local :diff for now (unchanged UX)
                         if line.startswith(":diff"):
                             _, _, filt = line.partition(" ")
                             filt = (filt or "").strip() or None
-                            staged = {
-                                "writes": self.cp.staged_writes,
-                                "patches": self.cp.staged_patches,
-                            }
+                            # staged = {"writes": self.cp.staged_writes, "patches": self.cp.staged_patches}
+                            staged = {"writes": self._staged_writes, "patches": self._staged_patches}
                             await self.render_preview(staged, path_filter=filt)
                             continue
-
-                        action = self.handle_command(line)
-                        if action is CommandAction.QUIT:
+    
+                        # Send other commands through the engine
+                        name, _, args = line[1:].partition(" ")
+                        step = await self.engine.handle(EvCommand(name=name, args=args))
+                        # recognize quit without duplicating CP logic
+                        if step.meta and step.meta.get("cmd_action") is CommandAction.QUIT:
                             self.write_line("Exiting chat.")
                             break
-                        # other actions already handled by CommandProcessor
+                        # (we don't expect effects for commands yet, but dispatch anyway)
+                        await self._dispatch_effects(step.effects)
                         continue
-
+    
                 # 2) Small-talk fast path
                 fast = self._small_talk_fastpath(line)
                 if fast is not None:
                     if fast:
                         self.write_line(fast)
                     continue
-
-                # 3) Normal state-machine turn
-                outcome = await self.sm.run_turn(line)
-                if "answer_md" in outcome:
-                    self.write_line(textwrap.dedent(outcome["answer_md"]).strip())
-                elif "writes" in outcome:
-                    self.write_line("Proposed writes (staged). Use ':diff' to preview or ':w' to apply.")
-                    self.cp.stage_writes(outcome["writes"])
-                elif "patches" in outcome:
-                    self.write_line("Proposed patches (staged). Use ':diff' to preview or ':w' to apply.")
-                    self.cp.stage_patches(outcome["patches"])
-                elif "clarify" in outcome:
-                    self.write_line(outcome["clarify"])
-                else:
-                    self.write_line(textwrap.dedent(str(outcome)))
-
+    
+                # 3) Normal text → engine
+                step = await self.engine.handle(EvUserText(text=line))
+                await self._dispatch_effects(step.effects)
+    
         except (KeyboardInterrupt, EOFError):
             self.write_line("\nExiting chat.")
         finally:
